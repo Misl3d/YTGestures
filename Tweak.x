@@ -1,6 +1,6 @@
 #import "YTVolumeHUD.h"
 #import <AVFoundation/AVFoundation.h>
-#import <AudioToolbox/AudioToolbox.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
