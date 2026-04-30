@@ -49,266 +49,101 @@ static const NSInteger TweakSection = 'ndyt';
 static NSString *const kVolumeBoostYTEnabledKey = @"VolumeBoostYTEnabled";
 
 static BOOL IsVolumeBoostYTEnabled() {
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  if ([defaults objectForKey:kVolumeBoostYTEnabledKey] == nil) {
-    return YES; // Default to enabled
-  }
-  return [defaults boolForKey:kVolumeBoostYTEnabledKey];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    return [defaults objectForKey:kVolumeBoostYTEnabledKey] ? [defaults boolForKey:kVolumeBoostYTEnabledKey] : YES;
 }
 
 // -----------------------------------------------------
-// CONFIGURATION: Set to 1 to remember volume across app restarts, 0 to reset to
-// 100% on launch.
+// SYSTEM VOLUME HELPER
 // -----------------------------------------------------
-#define ENABLE_VOLUME_PERSISTENCE 0
 
-#if ENABLE_VOLUME_PERSISTENCE
-static NSString *const kCustomYouTubeVolumeScalarKey =
-    @"CustomYouTubeVolumeScalar";
-#else
-static float currentVolumeMultiplier = 1.0f;
-#endif
-
-static NSHashTable *activeRenderers = nil;
-
-static void RegisterRenderer(id renderer) {
-  if (!activeRenderers) {
-    activeRenderers = [NSHashTable weakObjectsHashTable];
-  }
-  if (renderer) {
-    [activeRenderers addObject:renderer];
-  }
-}
-
-// Helper to get current volume multiplier
-static float GetCustomVolumeMultiplier() {
-#if ENABLE_VOLUME_PERSISTENCE
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  if ([defaults objectForKey:kCustomYouTubeVolumeScalarKey] == nil) {
-    return 1.0f; // Default to 100% volume
-  }
-  return [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
-#else
-  return currentVolumeMultiplier;
-#endif
-}
-
-static float GetLogarithmicAudioMultiplier() {
-  float m = GetCustomVolumeMultiplier();
-  if (m <= 1.0f) {
-    return m;
-  }
-  // m goes from 1.0 to 20.0 in the UI (2000%).
-  // We map this linearly to an exponent to achieve 200.0x physical amplitude
-  // max. powf(200.0f, (m - 1.0f) / 19.0f) ensures m=20 gives 200^1 = 200x.
-  return powf(200.0f, (m - 1.0f) / 19.0f);
-}
-
-static void NotifyVolumeChange() {
-  for (id renderer in [activeRenderers allObjects]) {
-    if ([renderer respondsToSelector:@selector(setVolume:)]) {
-      // Re-apply base volume 1.0, which then gets intercepted by our hook to
-      // apply the multiplier
-      [renderer setVolume:1.0f];
+static UISlider *GetSystemVolumeSlider() {
+    static UISlider *volumeSlider = nil;
+    if (!volumeSlider) {
+        // Create a hidden MPVolumeView to access the system slider
+        MPVolumeView *volumeView = [[MPVolumeView alloc] initWithFrame:CGRectZero];
+        for (UIView *view in [volumeView subviews]) {
+            if ([NSStringFromClass([view class]) isEqualToString:@"MPVolumeSlider"]) {
+                volumeSlider = (UISlider *)view;
+                break;
+            }
+        }
     }
-  }
+    return volumeSlider;
 }
 
-static void SetCustomVolumeMultiplier(float multiplier) {
-  if (multiplier < 0.0f)
-    multiplier = 0.0f;
-  if (multiplier > 20.0f)
-    multiplier = 20.0f;
+static float GetCurrentSystemVolume() {
+    return [[AVAudioSession sharedInstance] outputVolume];
+}
 
-#if ENABLE_VOLUME_PERSISTENCE
-  [[NSUserDefaults standardUserDefaults]
-      setFloat:multiplier
-        forKey:kCustomYouTubeVolumeScalarKey];
-  [[NSUserDefaults standardUserDefaults] synchronize];
-#else
-  currentVolumeMultiplier = multiplier;
-#endif
-
-  NotifyVolumeChange();
+static void SetSystemVolume(float level) {
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+    
+    UISlider *slider = GetSystemVolumeSlider();
+    [slider setValue:level animated:NO];
+    [slider sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
 // -----------------------------------------------------
-// High level AVFoundation / MediaPlayer Hooks
+// UI Hooks (sendEvent:)
 // -----------------------------------------------------
 
-%hook AVPlayer
-- (instancetype)init {
-  id orig = %orig;
-  RegisterRenderer(orig);
-  return orig;
-}
-- (void)setVolume:(float)volume {
-  RegisterRenderer(self);
-  if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
-  }
-  %orig(volume);
-}
-%end
-
-%hook AVAudioPlayerNode
-- (instancetype)init {
-  id orig = %orig;
-  RegisterRenderer(orig);
-  return orig;
-}
-- (void)setVolume:(float)volume {
-  RegisterRenderer(self);
-  if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
-  }
-  %orig(volume);
-}
-%end
-
-%hook AVAudioPlayer
-- (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
-  id orig = %orig;
-  RegisterRenderer(orig);
-  return orig;
-}
-- (instancetype)initWithData:(NSData *)data error:(NSError **)outError {
-  id orig = %orig;
-  RegisterRenderer(orig);
-  return orig;
-}
-- (void)setVolume:(float)volume {
-  RegisterRenderer(self);
-  if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
-  }
-  %orig(volume);
-}
-%end
-
-%hook AVSampleBufferAudioRenderer
-- (instancetype)init {
-  id orig = %orig;
-  RegisterRenderer(orig);
-  return orig;
-}
-- (void)setVolume:(float)volume {
-  RegisterRenderer(self);
-  if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
-  }
-  %orig(volume);
-}
-%end
-
-    // -----------------------------------------------------
-    // UI Hooks for Configuration (Native Touch Tracking via sendEvent:)
-    // -----------------------------------------------------
-
-    static float gestureStartMultiplier = 1.0f;
+static float gestureStartVolume = 0.0f;
 static BOOL possibleVolumeGesture = NO;
 static BOOL isTrackingVolumeGesture = NO;
 static CGPoint initialTouchPoint;
 
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
-  // Escape early if tweak is globally disabled in YouTube settings
-  if (!IsVolumeBoostYTEnabled()) {
+    if (!IsVolumeBoostYTEnabled()) { %orig(event); return; }
+
+    UITouch *touch = [[event allTouches] anyObject];
+    CGPoint location = [touch locationInView:self];
+
+    switch (touch.phase) {
+        case UITouchPhaseBegan: {
+            if (location.x >= self.bounds.size.width - 25.0f) {
+                possibleVolumeGesture = YES;
+                isTrackingVolumeGesture = NO;
+                initialTouchPoint = location;
+                return; 
+            }
+            break;
+        }
+        case UITouchPhaseMoved: {
+            if (possibleVolumeGesture) {
+                CGFloat dx = initialTouchPoint.x - location.x;
+                CGFloat dy = fabs(location.y - initialTouchPoint.y);
+                if (dx > 15.0f && dx > dy) {
+                    isTrackingVolumeGesture = YES;
+                    possibleVolumeGesture = NO;
+                    initialTouchPoint = location;
+                    gestureStartVolume = GetCurrentSystemVolume();
+                    return;
+                } else if (dy > 20.0f) {
+                    possibleVolumeGesture = NO;
+                }
+            }
+
+            if (isTrackingVolumeGesture) {
+                CGFloat translationY = location.y - initialTouchPoint.y;
+                // Sensitivity: 300 points for a full 0% to 100% change
+                float deltaVolume = -translationY / 300.0f; 
+                SetSystemVolume(gestureStartVolume + deltaVolume);
+                return;
+            }
+            break;
+        }
+        case UITouchPhaseEnded:
+        case UITouchPhaseCancelled: {
+            possibleVolumeGesture = NO;
+            isTrackingVolumeGesture = NO;
+            break;
+        }
+        default: break;
+    }
     %orig(event);
-    return;
-  }
-
-  // Only track touches from the main screen
-  if (self.screen != [UIScreen mainScreen]) {
-    %orig(event);
-    return;
-  }
-
-  NSSet<UITouch *> *touches = [event allTouches];
-  if (touches.count == 0) {
-    %orig(event);
-    return;
-  }
-
-  UITouch *touch = [touches anyObject];
-  CGPoint location = [touch locationInView:self];
-
-  switch (touch.phase) {
-  case UITouchPhaseBegan: {
-    // Check if the touch is within 25 points of the right edge
-    CGFloat screenWidth = self.bounds.size.width;
-    if (location.x >= screenWidth - 25.0f) {
-      possibleVolumeGesture = YES;
-      isTrackingVolumeGesture = NO;
-      initialTouchPoint = location;
-      return; // Swallow the touch, start evaluating gesture
-    }
-    break;
-  }
-  case UITouchPhaseMoved: {
-    if (possibleVolumeGesture) {
-      CGFloat dx = initialTouchPoint.x - location.x; // Positive if moving left
-      CGFloat dy = fabs(location.y - initialTouchPoint.y);
-
-      // Require moving left (inwards) by at least 15 points before locking in
-      if (dx > 15.0f && dx > dy) {
-        isTrackingVolumeGesture = YES;
-        possibleVolumeGesture = NO;
-
-        // Lock in! Now calculate relative vertical drag from this exact point
-        initialTouchPoint = location;
-        gestureStartMultiplier = GetCustomVolumeMultiplier();
-        [[YTVolumeHUD sharedHUD] showWithValue:gestureStartMultiplier];
-        return; // Swallow
-      } else if (dy > 20.0f || dx < -10.0f) {
-        // Failed gesture (moved up/down too early, or moved further right off
-        // screen)
-        possibleVolumeGesture = NO;
-      } else {
-        return; // Still evaluating, swallow touch
-      }
-    }
-
-    if (isTrackingVolumeGesture) {
-      CGFloat translationY = location.y - initialTouchPoint.y;
-
-      // Sweeping vertically up (negative Y) increases volume
-      // A full 570-point swipe upward reaches the 20x multiplier
-      float deltaMultiplier = -translationY / 30.0f;
-      float newMultiplier = gestureStartMultiplier + deltaMultiplier;
-
-      if (newMultiplier < 0.0f)
-        newMultiplier = 0.0f;
-      if (newMultiplier > 20.0f)
-        newMultiplier = 20.0f;
-
-      SetCustomVolumeMultiplier(newMultiplier);
-      [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
-      return; // Swallow the touch
-    }
-    break;
-  }
-  case UITouchPhaseEnded:
-  case UITouchPhaseCancelled: {
-    if (possibleVolumeGesture) {
-      possibleVolumeGesture = NO;
-      return; // Swallowed aborted tap
-    }
-    if (isTrackingVolumeGesture) {
-      isTrackingVolumeGesture = NO;
-      [[YTVolumeHUD sharedHUD] performSelector:@selector(hide)
-                                    withObject:nil
-                                    afterDelay:1.0];
-      return; // Swallow the touch
-    }
-    break;
-  }
-  default:
-    break;
-  }
-
-  // Pass the event to the app if we are not tracking our custom gesture
-  %orig(event);
 }
 %end
 
