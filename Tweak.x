@@ -201,42 +201,30 @@ static CGPoint initialTouchPoint;
 
 %end
 
-        %hook YTSettingsSectionItemManager
+%hook YTSettingsSectionItemManager
+%new(v@:@)
+- (void)updateVolumeBoostYTSectionWithEntry:(id)entry {
+    NSMutableArray<YTSettingsSectionItem *> *sectionItems = [NSMutableArray array];
+    Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
+    if (!YTSettingsSectionItemClass) return;
 
-        %new(v@:@)
-    - (void)updateVolumeBoostYTSectionWithEntry:(id)entry {
-  NSMutableArray<YTSettingsSectionItem *> *sectionItems =
-      [NSMutableArray array];
-  Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
+    YTSettingsViewController *settingsViewController = [self valueForKey:@"_settingsViewControllerDelegate"];
 
-  // Fallback if class not available (though it should be)
-  if (!YTSettingsSectionItemClass)
-    return;
-
-  YTSettingsViewController *settingsViewController =
-      [self valueForKey:@"_settingsViewControllerDelegate"];
-
-  YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
-          switchItemWithTitle:@"Enable VolumeBoostYT"
+    YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
+          switchItemWithTitle:@"Enable System Volume Gesture"
              titleDescription:@"Allow custom right-edge pan volume gesture"
       accessibilityIdentifier:nil
                      switchOn:IsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
-                    [[NSUserDefaults standardUserDefaults]
-                        setBool:enabled
-                         forKey:kVolumeBoostYTEnabledKey];
+                    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kVolumeBoostYTEnabledKey];
                     [[NSUserDefaults standardUserDefaults] synchronize];
 
-                    // Re-fire volume to normalize or amplify existing active
-                    // players immediately
-                    if (!enabled) {
-                      SetCustomVolumeMultiplier(1.0f);
-                    }
-                    NotifyVolumeChange();
+                    // If user disables it, we don't need to reset anything 
+                    // because we are just controlling the hardware volume now.
                     return YES;
                   }
                 settingItemId:0];
-  [sectionItems addObject:enableTweak];
+    [sectionItems addObject:enableTweak];
 
   if ([settingsViewController
           respondsToSelector:@selector
@@ -261,13 +249,12 @@ static CGPoint initialTouchPoint;
 }
 
 - (void)updateSectionForCategory:(NSUInteger)category withEntry:(id)entry {
-  if (category == TweakSection) {
-    [self updateVolumeBoostYTSectionWithEntry:entry];
-    return;
-  }
-  %orig;
+    if (category == TweakSection) {
+        [self updateVolumeBoostYTSectionWithEntry:entry];
+        return;
+    }
+    %orig;
 }
-
 %end
 
     %end // end group YouTubeSettings
