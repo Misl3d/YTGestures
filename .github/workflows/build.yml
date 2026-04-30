@@ -3,9 +3,8 @@ name: Build Tweak
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
+    tags: [ "v*" ]  # Trigger when you push a tag like v1.0.1
+  workflow_dispatch: # Allows you to run it manually from the Actions tab
 
 jobs:
   build:
@@ -61,11 +60,13 @@ jobs:
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Publish to GitHub Releases
+- name: Publish to GitHub Releases
+        # This 'if' check ensures a release is ONLY created if a tag was pushed
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: YTGestures ${{ steps.tag.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: YTGestures ${{ github.ref_name }}
           files: output/*
           make_latest: true
           fail_on_unmatched_files: false
