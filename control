@@ -1,9 +1,9 @@
-Package: com.vasirakcalgux.volumeboostyt
-Name: VolumeBoostYT
-Version: 1.0.2
+Package: com.Misl3d.volumeboostyt
+Name: YTGestures
+Version: 1.0.0
 Architecture: iphoneos-arm64
 Description: An awesome MobileSubstrate tweak!
-Maintainer: vasirakcalgux
-Author: vasirakcalgux
+Maintainer: Misl3d
+Author: Misl3d
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000)
